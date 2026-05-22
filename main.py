@@ -1,11 +1,16 @@
 """
 main.py
-WSP Comprobantes — controlador principal.
-Orquesta: GUI ↔ LectorWhatsApp ↔ LectorOCR ↔ GestorExcel ↔ GestorLotes
+WSP Comprobantes - controlador principal.
+Flujo:
+  Pasada 1 - Imagenes metodo 1 (calendario)
+  Pasada 2 - PDFs (calendario)
+  Pasada 3 - Imagenes metodo 2 (final) solo si pasada 1 = 0
+  Loop continuo esperando mensajes nuevos
 """
 
 import os
 import json
+import time
 import threading
 import datetime as dt
 import tkinter as tk
@@ -36,14 +41,14 @@ class Controlador:
             return json.load(f)
 
     # ------------------------------------------------------------------ #
-    # API pública para la GUI
+    # API publica para la GUI
     # ------------------------------------------------------------------ #
     def iniciar(self, nombre_grupo: str, fecha_inicio_str: str,
                 hora_inicio_str: str, modo_lotes: bool,
                 cliente_fijo: str, timeout_lotes_min: int):
 
         if self._correr:
-            self.log("⚠ Ya hay una sesión activa.")
+            self.log("Ya hay una sesion activa.")
             return
 
         try:
@@ -51,7 +56,7 @@ class Controlador:
                 f"{fecha_inicio_str} {hora_inicio_str}", "%d/%m/%Y %H:%M"
             )
         except ValueError:
-            self.log("❌ Fecha u hora inválida. Formato: dd/mm/yyyy y hh:mm")
+            self.log("Fecha u hora invalida. Formato: dd/mm/yyyy y hh:mm")
             return
 
         self._correr = True
@@ -84,13 +89,13 @@ class Controlador:
             daemon=True,
         )
         self._hilo.start()
-        self.log("▶ Sesión iniciada.")
+        self.log("Sesion iniciada.")
 
     def detener(self):
         self._correr = False
         if self.wsp:
             self.wsp.detener()
-        self.log("⏹ Sesión detenida.")
+        self.log("Sesion detenida.")
 
     # ------------------------------------------------------------------ #
     # Loop principal
@@ -99,67 +104,79 @@ class Controlador:
         try:
             self.wsp.iniciar_sesion(fecha_inicio=fecha_inicio.date())
 
+            # Pasada 1 — Imagenes metodo 1 (calendario)
+            archivos_img = self.wsp.procesar_imagenes(fecha_inicio.date())
+            for archivo in archivos_img:
+                if not self._correr:
+                    break
+                self._procesar_archivo(archivo)
+
+            # Pasada 2 — PDFs
+            archivos_pdf = self.wsp.procesar_pdfs(fecha_inicio.date())
+            for archivo in archivos_pdf:
+                if not self._correr:
+                    break
+                self._procesar_archivo(archivo)
+
+            # Pasada 3 — Imagenes metodo 2 (solo si metodo 1 no encontro nada)
+            if len(archivos_img) == 0:
+                archivos_img2 = self.wsp.procesar_imagenes_desde_final(
+                    fecha_inicio.date())
+                for archivo in archivos_img2:
+                    if not self._correr:
+                        break
+                    self._procesar_archivo(archivo)
+
+            # Loop continuo esperando mensajes nuevos
             while self._correr:
                 mensajes = self.wsp.leer_mensajes_recientes()
-
                 for msg in mensajes:
                     if not self._correr:
                         break
-
-                    if msg["tipo"] == "adjunto":
-                        self._procesar_adjunto(msg, fecha_inicio)
-
-                    elif msg["tipo"] == "texto":
+                    if msg["tipo"] == "texto":
                         registros = self.lotes.registrar_nombre_cliente(
-                            msg["texto"]
-                        )
+                            msg["texto"])
                         for reg in registros:
                             self._registrar_en_excel(reg)
+                time.sleep(self.config["intervalo_lectura_segundos"])
 
         except Exception as e:
-            self.log(f"❌ Error en loop: {e}")
+            self.log(f"Error en loop: {e}")
         finally:
             self._correr = False
-            self.log("ℹ Loop finalizado.")
+            self.log("Loop finalizado.")
 
     # ------------------------------------------------------------------ #
-    # Procesar adjunto
+    # Procesar archivo
     # ------------------------------------------------------------------ #
-    def _procesar_adjunto(self, msg: dict, fecha_inicio: dt.datetime):
-        archivos = self.wsp.descargar_adjunto(msg, fecha_inicio.date())
-        if not archivos:
+    def _procesar_archivo(self, archivo: str):
+        datos  = self.ocr.procesar_archivo(archivo)
+        estado = "OK"
+
+        nro_op = datos.get("nro_operacion", "XX")
+        if self.excel.es_duplicado(nro_op):
+            self.log(f"Duplicado ignorado: {nro_op}")
             return
 
-        for archivo in archivos:
-            datos  = self.ocr.procesar_archivo(archivo)
-            estado = "OK"
+        registro = self.lotes.construir_registro(datos_ocr=datos, estado=estado)
 
-            nro_op = datos.get("nro_operacion", "XX")
-            if self.excel.es_duplicado(nro_op):
-                self.log(f"⏭ Duplicado ignorado: {nro_op}")
-                continue
+        if self.lotes.modo_lotes:
+            self.log(f"Acumulado: {nro_op} | {datos['banco']} | ${datos['monto']}")
+            return
 
-            registro = self.lotes.construir_registro(datos_ocr=datos, estado=estado)
-
-            if self.lotes.modo_lotes:
-                self.log(
-                    f"📥 Acumulado en lote: {nro_op} | {datos['banco']} | ${datos['monto']}"
-                )
-                continue
-
-            self._registrar_en_excel(registro)
+        self._registrar_en_excel(registro)
 
     # ------------------------------------------------------------------ #
     def _registrar_en_excel(self, registro: dict):
         self.excel.registrar(registro)
         self.log(
-            f"✅ Registrado → {registro['nro_operacion']} | "
+            f"Registrado -> {registro['nro_operacion']} | "
             f"{registro['banco']} | ${registro['monto']} | "
             f"Cliente: {registro['cliente']} | {registro['estado']}"
         )
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
+# ===================================================================== #
 if __name__ == "__main__":
     root = tk.Tk()
     app_ref = []

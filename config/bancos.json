@@ -1,0 +1,25 @@
+{
+  "bancos": [
+    { "nombre": "BBVA",             "cod_cta": 150, "prefijo_op": "BBVA",   "cbu_prefijos": ["017"], "cvu_prefijos": [] },
+    { "nombre": "Credicoop",        "cod_cta": 191, "prefijo_op": "",        "cbu_prefijos": ["191"], "cvu_prefijos": [] },
+    { "nombre": "Mercado Pago",     "cod_cta": 153, "prefijo_op": "MP",     "cbu_prefijos": [],      "cvu_prefijos": ["00000031"] },
+    { "nombre": "BNA",              "cod_cta": 11,  "prefijo_op": "BNA",    "cbu_prefijos": ["011"], "cvu_prefijos": [] },
+    { "nombre": "Provincia",        "cod_cta": 14,  "prefijo_op": "BAPRO",  "cbu_prefijos": ["014"], "cvu_prefijos": [] },
+    { "nombre": "Galicia",          "cod_cta": 7,   "prefijo_op": "GAL",    "cbu_prefijos": ["007"], "cvu_prefijos": [] },
+    { "nombre": "Santander",        "cod_cta": 72,  "prefijo_op": "",        "cbu_prefijos": ["072"], "cvu_prefijos": [] },
+    { "nombre": "Macro",            "cod_cta": 285, "prefijo_op": "",        "cbu_prefijos": ["285"], "cvu_prefijos": [] },
+    { "nombre": "Banco Ciudad",     "cod_cta": 29,  "prefijo_op": "CIUDAD", "cbu_prefijos": ["029"], "cvu_prefijos": [] },
+    { "nombre": "Uala",             "cod_cta": 384, "prefijo_op": "",        "cbu_prefijos": ["384"], "cvu_prefijos": ["00000079"] },
+    { "nombre": "Personal Pay",     "cod_cta": 0,   "prefijo_op": "PP",     "cbu_prefijos": [],      "cvu_prefijos": ["00000130"] },
+    { "nombre": "Naranja X",        "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000062"] },
+    { "nombre": "Lemon",            "cod_cta": 0,   "prefijo_op": "LEM",    "cbu_prefijos": [],      "cvu_prefijos": ["00000093"] },
+    { "nombre": "Brubank",          "cod_cta": 143, "prefijo_op": "",        "cbu_prefijos": ["143"], "cvu_prefijos": [] },
+    { "nombre": "Belo",             "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000551"] },
+    { "nombre": "Buenbit",          "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000178"] },
+    { "nombre": "Claro Pay",        "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000116"] },
+    { "nombre": "Modo",             "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000048"] },
+    { "nombre": "Prex",             "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000192"] },
+    { "nombre": "Yacaré",           "cod_cta": 0,   "prefijo_op": "",        "cbu_prefijos": [],      "cvu_prefijos": ["00000086"] },
+    { "nombre": "Supervielle IUDU", "cod_cta": 27,  "prefijo_op": "",        "cbu_prefijos": ["027"], "cvu_prefijos": ["00000055"] }
+  ]
+}

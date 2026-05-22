@@ -1,0 +1,9 @@
+{
+  "carpeta_descargas": "comprobantes_descargados",
+  "archivo_excel": "comprobantes.xlsx",
+  "espera_descarga_segundos": 15,
+  "intervalo_lectura_segundos": 5,
+  "perfil_chrome": "~/wsp_comprobantes_perfil",
+  "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+  "timeout_lotes_minutos": 10
+}

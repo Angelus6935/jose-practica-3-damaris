@@ -8,3 +8,4 @@ class ControladorMock:
 root = tk.Tk()
 app = VentanaPrincipal(root, ControladorMock())
 root.mainloop()
+

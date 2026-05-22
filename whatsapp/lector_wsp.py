@@ -4,6 +4,7 @@ Controla Chrome via Selenium para leer mensajes de WhatsApp Web.
 Anti-StaleElement: siempre re-localiza por data-id antes de interactuar.
 Descarga: snapshot previo para detectar archivos nuevos.
 Filtro: lee fecha del visor antes de descargar.
+Carrusel: navega desde el último hacia la izquierda.
 """
 
 import os
@@ -34,8 +35,10 @@ SEL_DOC_THUMB     = '[data-testid="document-thumb"]'
 SEL_IMG_THUMB     = '[data-testid="image-thumb"]'
 SEL_BTN_DESCARGAR = '[aria-label="Descargar"]'
 SEL_BTN_CERRAR    = '[aria-label="Cerrar"]'
-SEL_TEXTO_MSG     = "span.selectable-text"
+SEL_BTN_SIGUIENTE = '[aria-label="Siguiente"]'
+SEL_BTN_ANTERIOR  = '[aria-label="Anterior"]'
 SEL_FECHA_VISOR   = '[data-testid="cell-frame-secondary"]'
+SEL_TEXTO_MSG     = "span.selectable-text"
 
 EXT_VALIDAS    = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic")
 MAX_REINTENTOS = 3
@@ -207,37 +210,62 @@ class LectorWhatsApp:
         return None
 
     # ------------------------------------------------------------------ #
-    # Descarga de adjunto
+    # Contador del carrusel  ej: "3 de 7"
     # ------------------------------------------------------------------ #
-    def descargar_adjunto(self, msg: dict, fecha_inicio: dt.date) -> str | None:
+    def _leer_contador_carrusel(self) -> tuple[int, int] | None:
+        try:
+            elems = self.driver.find_elements(By.XPATH, '//*[text()]')
+            for el in elems:
+                txt = el.text.strip()
+                m = re.match(r'^(\d+) de (\d+)$', txt)
+                if m:
+                    return int(m.group(1)), int(m.group(2))
+        except Exception:
+            pass
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Descarga de adjunto principal
+    # ------------------------------------------------------------------ #
+    def descargar_adjunto(self, msg: dict, fecha_inicio: dt.date) -> list[str]:
+        """
+        Retorna lista de archivos descargados (puede ser vacía).
+        Para imágenes recorre el carrusel desde el último hacia la izquierda.
+        Para PDFs descarga directo.
+        """
         data_id = msg["data_id"]
+        es_pdf  = msg.get("es_pdf", False)
         self.log(f"⬇ Abriendo adjunto {data_id[:10]}...")
 
         for intento in range(1, MAX_REINTENTOS + 1):
-            resultado = self._intentar_descarga(msg, data_id, intento, fecha_inicio)
-            if resultado == IGNORADO:
-                return None
-            if resultado:
-                return resultado
-            self._scroll_al_final()
-            time.sleep(1.5)
+            # Re-localizar y hacer clic en thumb
+            resultado = self._abrir_visor(msg, data_id, intento)
+            if resultado == "STALE":
+                self._scroll_al_final()
+                time.sleep(1.5)
+                continue
+            if resultado == "ERROR":
+                return []
+            break
+        else:
+            self.log(f"❌ No se pudo abrir el visor tras {MAX_REINTENTOS} intentos")
+            return []
 
-        self.log(f"❌ Falló descarga tras {MAX_REINTENTOS} intentos")
-        return None
+        time.sleep(2)
 
-    def _intentar_descarga(self, msg: dict, data_id: str,
-                           intento: int, fecha_inicio: dt.date):
-        archivos_previos = self._snapshot_descargas()
+        if es_pdf:
+            return self._descargar_pdf(fecha_inicio)
+        else:
+            return self._descargar_carrusel(fecha_inicio)
 
-        # Re-localizar mensaje
+    def _abrir_visor(self, msg: dict, data_id: str, intento: int) -> str:
         try:
             msg_elem = self.driver.find_element(
                 By.CSS_SELECTOR, f'[data-id="{data_id}"]')
         except NoSuchElementException:
             self.log(f"⚠ [{intento}] Mensaje no encontrado en DOM")
-            return None
+            return "ERROR"
 
-        # Clic en thumb
         try:
             thumb_sel = SEL_DOC_THUMB if msg.get("es_pdf") else SEL_IMG_THUMB
             thumb = msg_elem.find_element(By.CSS_SELECTOR, thumb_sel)
@@ -245,23 +273,92 @@ class LectorWhatsApp:
                 "arguments[0].scrollIntoView(true);", thumb)
             time.sleep(0.5)
             thumb.click()
+            return "OK"
         except StaleElementReferenceException:
-            self.log(f"⚠ [{intento}] StaleElement en thumb — reintentando...")
-            return None
+            self.log(f"⚠ [{intento}] StaleElement — reintentando...")
+            return "STALE"
         except Exception as e:
-            self.log(f"⚠ [{intento}] No se pudo abrir adjunto: {e}")
-            return None
+            self.log(f"⚠ [{intento}] Error abriendo visor: {e}")
+            return "ERROR"
 
-        time.sleep(2)
-
-        # Leer fecha del visor ANTES de descargar
+    # ------------------------------------------------------------------ #
+    # Descarga PDF
+    # ------------------------------------------------------------------ #
+    def _descargar_pdf(self, fecha_inicio: dt.date) -> list[str]:
         fecha_visor = self._leer_fecha_visor()
         if fecha_visor is not None and fecha_visor < fecha_inicio:
-            self.log(f"⏭ Adjunto del {fecha_visor} anterior a fecha inicio — ignorado")
+            self.log(f"⏭ PDF del {fecha_visor} anterior a fecha inicio — ignorado")
             self._cerrar_visor()
-            return IGNORADO
+            return []
 
-        # Botón descargar
+        archivo = self._click_descargar()
+        self._cerrar_visor()
+        return [archivo] if archivo else []
+
+    # ------------------------------------------------------------------ #
+    # Descarga carrusel de imágenes
+    # ------------------------------------------------------------------ #
+    def _descargar_carrusel(self, fecha_inicio: dt.date) -> list[str]:
+        """
+        Navega al último del carrusel, luego va hacia la izquierda
+        descargando mientras fecha >= fecha_inicio.
+        """
+        archivos = []
+
+        # Ir al último
+        self._ir_al_ultimo_carrusel()
+        time.sleep(1)
+
+        while True:
+            fecha_visor = self._leer_fecha_visor()
+
+            if fecha_visor is not None and fecha_visor < fecha_inicio:
+                self.log(f"⏭ Imagen del {fecha_visor} anterior a fecha inicio — deteniendo carrusel")
+                break
+
+            # Descargar imagen actual
+            archivo = self._click_descargar()
+            if archivo:
+                self.log(f"🖼 Imagen descargada: {os.path.basename(archivo)}")
+                archivos.append(archivo)
+
+            # Mover a la izquierda
+            if not self._click_anterior():
+                self.log("ℹ Llegué al inicio del carrusel")
+                break
+
+            time.sleep(1)
+
+        self._cerrar_visor()
+        return archivos
+
+    def _ir_al_ultimo_carrusel(self):
+        """Hace clic en Siguiente hasta llegar al último."""
+        max_intentos = 50
+        for _ in range(max_intentos):
+            try:
+                btn = self.driver.find_element(
+                    By.CSS_SELECTOR, SEL_BTN_SIGUIENTE)
+                btn.click()
+                time.sleep(0.5)
+            except NoSuchElementException:
+                break
+            except Exception:
+                break
+
+    def _click_anterior(self) -> bool:
+        try:
+            btn = self.driver.find_element(
+                By.CSS_SELECTOR, SEL_BTN_ANTERIOR)
+            btn.click()
+            return True
+        except NoSuchElementException:
+            return False
+        except Exception:
+            return False
+
+    def _click_descargar(self) -> str | None:
+        archivos_previos = self._snapshot_descargas()
         try:
             btn_dl = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable(
@@ -269,14 +366,13 @@ class LectorWhatsApp:
             )
             btn_dl.click()
         except TimeoutException:
-            self.log(f"⚠ [{intento}] Botón Descargar no apareció")
-            self._cerrar_visor()
+            self.log("⚠ Botón Descargar no apareció")
             return None
+        return self._esperar_archivo_nuevo(archivos_previos)
 
-        archivo = self._esperar_archivo_nuevo(archivos_previos)
-        self._cerrar_visor()
-        return archivo
-
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
     def _snapshot_descargas(self) -> set:
         try:
             return {
@@ -288,7 +384,7 @@ class LectorWhatsApp:
         except Exception:
             return set()
 
-    def _esperar_archivo_nuevo(self, archivos_previos: set):
+    def _esperar_archivo_nuevo(self, archivos_previos: set) -> str | None:
         inicio = time.time()
         while time.time() - inicio < self.espera_descarga:
             actuales = self._snapshot_descargas()

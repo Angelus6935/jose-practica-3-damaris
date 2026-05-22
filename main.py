@@ -126,35 +126,28 @@ class Controlador:
     # Procesar adjunto
     # ------------------------------------------------------------------ #
     def _procesar_adjunto(self, msg: dict, fecha_inicio: dt.datetime):
-        # Filtro por fecha del mensaje desde el DOM (sin descargar)
-        fecha_msg = msg.get("fecha_msg")
-        if fecha_msg and fecha_msg < fecha_inicio.date():
-            self.log(f"⏭ Mensaje del {fecha_msg} anterior a fecha inicio — ignorado")
+        archivos = self.wsp.descargar_adjunto(msg, fecha_inicio.date())
+        if not archivos:
             return
 
-        archivo = self.wsp.descargar_adjunto(msg, fecha_inicio.date())
-        if not archivo:
-            return
+        for archivo in archivos:
+            datos  = self.ocr.procesar_archivo(archivo)
+            estado = "OK"
 
-        datos  = self.ocr.procesar_archivo(archivo)
-        estado = "OK"
+            nro_op = datos.get("nro_operacion", "XX")
+            if self.excel.es_duplicado(nro_op):
+                self.log(f"⏭ Duplicado ignorado: {nro_op}")
+                continue
 
-        # Deduplicación
-        nro_op = datos.get("nro_operacion", "XX")
-        if self.excel.es_duplicado(nro_op):
-            self.log(f"⏭ Duplicado ignorado: {nro_op}")
-            return
+            registro = self.lotes.construir_registro(datos_ocr=datos, estado=estado)
 
-        # Construir registro
-        registro = self.lotes.construir_registro(datos_ocr=datos, estado=estado)
+            if self.lotes.modo_lotes:
+                self.log(
+                    f"📥 Acumulado en lote: {nro_op} | {datos['banco']} | ${datos['monto']}"
+                )
+                continue
 
-        if self.lotes.modo_lotes:
-            self.log(
-                f"📥 Acumulado en lote: {nro_op} | {datos['banco']} | ${datos['monto']}"
-            )
-            return
-
-        self._registrar_en_excel(registro)
+            self._registrar_en_excel(registro)
 
     # ------------------------------------------------------------------ #
     def _registrar_en_excel(self, registro: dict):

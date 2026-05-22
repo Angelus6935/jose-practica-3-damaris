@@ -1,11 +1,11 @@
 """
 whatsapp/lector_wsp.py
 Flujo:
-  Pasada 1 - Imagenes: calendario -> carrusel adelante
-  Pasada 2 - PDFs: calendario -> uno por uno
-  Pasada 3 - Imagenes desde final (solo si pasada 1 = 0):
-             abre ultima imagen -> va al ultimo del carrusel -> recorre hacia atras
-Fix: verifica si hay siguiente ANTES de descargar para no repetir ultima imagen
+  Pasada 1 - Imagenes: calendario -> re-localiza thumb -> carrusel adelante
+  Pasada 2 - PDFs: scroll desde el inicio del chat visible -> procesa todos
+  Pasada 3 - Imagenes desde final (solo si pasada 1 = 0)
+Fix StaleElement: re-localiza imagen despues del salto de calendario
+Fix PDFs: no usa calendario, scrollea todo el chat buscando PDFs
 """
 
 import os
@@ -137,19 +137,35 @@ class LectorWhatsApp:
 
         self._ir_a_fecha(fecha_inicio)
         time.sleep(2)
+
+        # Re-localizar thumb DESPUES del salto (anti-stale)
         primera_img = self._encontrar_primer_thumb(SEL_IMG_THUMB)
 
         if not primera_img:
             self.log("Metodo 1: no encontro imagenes en fecha indicada")
             return []
 
-        try:
-            primera_img.click()
-            time.sleep(2)
-        except Exception as e:
-            self.log(f"No se pudo abrir el carrusel: {e}")
+        # Re-localizar y hacer clic con reintento
+        abierto = False
+        for intento in range(3):
+            try:
+                primera_img = self._encontrar_primer_thumb(SEL_IMG_THUMB)
+                if not primera_img:
+                    break
+                primera_img.click()
+                abierto = True
+                break
+            except StaleElementReferenceException:
+                self.log(f"StaleElement intento {intento+1} — reintentando...")
+                time.sleep(1)
+            except Exception as e:
+                self.log(f"No se pudo abrir el carrusel: {e}")
+                break
+
+        if not abierto:
             return []
 
+        time.sleep(2)
         archivos = []
 
         for _ in range(500):
@@ -161,7 +177,6 @@ class LectorWhatsApp:
                 self.log(f"Imagen del {fecha_visor} anterior — deteniendo")
                 break
 
-            # Verificar si hay siguiente ANTES de descargar
             hay_sig = self._hay_siguiente()
 
             archivo = self._click_descargar()
@@ -169,7 +184,6 @@ class LectorWhatsApp:
                 archivos.append(archivo)
                 self.log(f"Imagen: {os.path.basename(archivo)}")
 
-            # Si no habia siguiente, era la ultima — salir
             if not hay_sig:
                 self.log("Llegue al final del carrusel")
                 break
@@ -198,14 +212,25 @@ class LectorWhatsApp:
             self.log("No se encontraron imagenes en el chat")
             return []
 
-        try:
-            ultima_img.click()
-            time.sleep(2)
-        except Exception as e:
-            self.log(f"No se pudo abrir el carrusel: {e}")
+        abierto = False
+        for intento in range(3):
+            try:
+                ultima_img = self._encontrar_ultima_imagen()
+                if not ultima_img:
+                    break
+                ultima_img.click()
+                abierto = True
+                break
+            except StaleElementReferenceException:
+                time.sleep(1)
+            except Exception as e:
+                self.log(f"No se pudo abrir el carrusel: {e}")
+                break
+
+        if not abierto:
             return []
 
-        # Ir al ultimo del carrusel
+        time.sleep(2)
         self.log("Navegando al ultimo del carrusel...")
         self._ir_al_ultimo_carrusel()
         time.sleep(1)
@@ -221,7 +246,6 @@ class LectorWhatsApp:
                 self.log(f"Imagen del {fecha_visor} anterior — deteniendo")
                 break
 
-            # Verificar si hay anterior ANTES de descargar
             hay_ant = self._hay_anterior()
 
             archivo = self._click_descargar()
@@ -229,7 +253,6 @@ class LectorWhatsApp:
                 archivos.append(archivo)
                 self.log(f"Imagen: {os.path.basename(archivo)}")
 
-            # Si no habia anterior, era la primera — salir
             if not hay_ant:
                 self.log("Llegue al inicio del carrusel")
                 break
@@ -245,7 +268,6 @@ class LectorWhatsApp:
         return archivos
 
     def _ir_al_ultimo_carrusel(self):
-        """Hace clic en Siguiente hasta que el boton este deshabilitado."""
         for _ in range(500):
             try:
                 btn = self.driver.find_element(By.CSS_SELECTOR, SEL_BTN_SIGUIENTE)
@@ -259,17 +281,20 @@ class LectorWhatsApp:
                 break
 
     # ------------------------------------------------------------------ #
-    # Pasada 2 - PDFs
+    # Pasada 2 - PDFs (scrollea todo el chat visible)
     # ------------------------------------------------------------------ #
     def procesar_pdfs(self, fecha_inicio: dt.date) -> list[str]:
         self.log("Iniciando pasada de PDFs...")
+
+        # Saltar al calendario primero para posicionarnos en la fecha
         self._ir_a_fecha(fecha_inicio)
         time.sleep(2)
 
         archivos = []
         procesados_pdf = set()
+        ciclos_sin_nuevos = 0
 
-        for _ in range(100):
+        for _ in range(200):
             if not self._activo:
                 break
 
@@ -287,14 +312,17 @@ class LectorWhatsApp:
                     procesados_pdf.add(data_id)
                     nuevos = True
 
+                    # Re-localizar thumb (anti-stale)
                     try:
-                        thumb = msg.find_element(By.CSS_SELECTOR, SEL_DOC_THUMB)
+                        msg_elem = self.driver.find_element(
+                            By.CSS_SELECTOR, f'[data-id="{data_id}"]')
+                        thumb = msg_elem.find_element(By.CSS_SELECTOR, SEL_DOC_THUMB)
                         self.driver.execute_script(
                             "arguments[0].scrollIntoView(true);", thumb)
                         time.sleep(0.5)
                         thumb.click()
                         time.sleep(2)
-                    except StaleElementReferenceException:
+                    except (StaleElementReferenceException, NoSuchElementException):
                         continue
 
                     fecha_visor = self._leer_fecha_visor()
@@ -315,11 +343,16 @@ class LectorWhatsApp:
                 except Exception:
                     continue
 
+            # Scrollear para cargar mas mensajes
             self._scroll_al_final()
             time.sleep(self.intervalo_lectura)
 
             if not nuevos:
-                break
+                ciclos_sin_nuevos += 1
+                if ciclos_sin_nuevos >= 3:
+                    break
+            else:
+                ciclos_sin_nuevos = 0
 
         self.log(f"PDFs descargados: {len(archivos)}")
         return archivos
@@ -494,13 +527,11 @@ class LectorWhatsApp:
             elem = self.driver.find_element(By.CSS_SELECTOR, SEL_FECHA_VISOR)
             texto = elem.text.strip().lower()
 
-            # Hoy / Ayer
             if "hoy" in texto:
                 return dt.date.today()
             if "ayer" in texto:
                 return dt.date.today() - dt.timedelta(days=1)
 
-            # dd/mm/yyyy
             m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', texto)
             if m:
                 return dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))

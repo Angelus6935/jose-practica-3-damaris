@@ -5,6 +5,7 @@ Flujo:
   Pasada 2 - PDFs: calendario -> uno por uno
   Pasada 3 - Imagenes desde final (solo si pasada 1 = 0):
              abre ultima imagen -> va al ultimo del carrusel -> recorre hacia atras
+Fix: verifica si hay siguiente ANTES de descargar para no repetir ultima imagen
 """
 
 import os
@@ -160,10 +161,18 @@ class LectorWhatsApp:
                 self.log(f"Imagen del {fecha_visor} anterior — deteniendo")
                 break
 
+            # Verificar si hay siguiente ANTES de descargar
+            hay_sig = self._hay_siguiente()
+
             archivo = self._click_descargar()
             if archivo:
                 archivos.append(archivo)
                 self.log(f"Imagen: {os.path.basename(archivo)}")
+
+            # Si no habia siguiente, era la ultima — salir
+            if not hay_sig:
+                self.log("Llegue al final del carrusel")
+                break
 
             if not self._click_siguiente():
                 self.log("Llegue al final del carrusel")
@@ -212,10 +221,18 @@ class LectorWhatsApp:
                 self.log(f"Imagen del {fecha_visor} anterior — deteniendo")
                 break
 
+            # Verificar si hay anterior ANTES de descargar
+            hay_ant = self._hay_anterior()
+
             archivo = self._click_descargar()
             if archivo:
                 archivos.append(archivo)
                 self.log(f"Imagen: {os.path.basename(archivo)}")
+
+            # Si no habia anterior, era la primera — salir
+            if not hay_ant:
+                self.log("Llegue al inicio del carrusel")
+                break
 
             if not self._click_anterior():
                 self.log("Llegue al inicio del carrusel")
@@ -475,13 +492,35 @@ class LectorWhatsApp:
     def _leer_fecha_visor(self) -> dt.date | None:
         try:
             elem = self.driver.find_element(By.CSS_SELECTOR, SEL_FECHA_VISOR)
-            texto = elem.text.strip()
+            texto = elem.text.strip().lower()
+
+            # Hoy / Ayer
+            if "hoy" in texto:
+                return dt.date.today()
+            if "ayer" in texto:
+                return dt.date.today() - dt.timedelta(days=1)
+
+            # dd/mm/yyyy
             m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', texto)
             if m:
                 return dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
         except Exception:
             pass
         return None
+
+    def _hay_siguiente(self) -> bool:
+        try:
+            btn = self.driver.find_element(By.CSS_SELECTOR, SEL_BTN_SIGUIENTE)
+            return not btn.get_attribute("disabled")
+        except Exception:
+            return False
+
+    def _hay_anterior(self) -> bool:
+        try:
+            btn = self.driver.find_element(By.CSS_SELECTOR, SEL_BTN_ANTERIOR)
+            return not btn.get_attribute("disabled")
+        except Exception:
+            return False
 
     def _click_descargar(self) -> str | None:
         archivos_previos = self._snapshot_descargas()

@@ -132,7 +132,7 @@ class Controlador:
             self.log(f"⏭ Mensaje del {fecha_msg} anterior a fecha inicio — ignorado")
             return
 
-        archivo = self.wsp.descargar_adjunto(msg)
+        archivo = self.wsp.descargar_adjunto(msg, fecha_inicio.date())
         if not archivo:
             return
 

@@ -3,6 +3,7 @@ whatsapp/lector_wsp.py
 Controla Chrome via Selenium para leer mensajes de WhatsApp Web.
 Anti-StaleElement: siempre re-localiza por data-id antes de interactuar.
 Descarga: snapshot previo para detectar archivos nuevos.
+Filtro: lee fecha del visor antes de descargar.
 """
 
 import os
@@ -34,9 +35,11 @@ SEL_IMG_THUMB     = '[data-testid="image-thumb"]'
 SEL_BTN_DESCARGAR = '[aria-label="Descargar"]'
 SEL_BTN_CERRAR    = '[aria-label="Cerrar"]'
 SEL_TEXTO_MSG     = "span.selectable-text"
+SEL_FECHA_VISOR   = '[data-testid="cell-frame-secondary"]'
 
 EXT_VALIDAS    = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic")
 MAX_REINTENTOS = 3
+IGNORADO       = "IGNORADO"
 
 
 class LectorWhatsApp:
@@ -148,12 +151,10 @@ class LectorWhatsApp:
                 tiene_img = self._tiene_selector(msg, SEL_IMG_THUMB)
 
                 if tiene_pdf or tiene_img:
-                    fecha_msg = self._leer_fecha_mensaje(msg)
                     resultado.append({
-                        "tipo":      "adjunto",
-                        "data_id":   data_id,
-                        "es_pdf":    tiene_pdf,
-                        "fecha_msg": fecha_msg,
+                        "tipo":    "adjunto",
+                        "data_id": data_id,
+                        "es_pdf":  tiene_pdf,
                     })
                     self._mensajes_procesados.add(data_id)
                     continue
@@ -186,31 +187,36 @@ class LectorWhatsApp:
         except (NoSuchElementException, StaleElementReferenceException):
             return False
 
-    def _leer_fecha_mensaje(self, msg_elem) -> dt.date:
+    # ------------------------------------------------------------------ #
+    # Fecha del visor
+    # ------------------------------------------------------------------ #
+    def _leer_fecha_visor(self) -> dt.date | None:
         try:
-            divs = msg_elem.find_elements(
-                By.XPATH, './/div[contains(text(), "/202")]')
-            for div in divs:
-                texto = div.text.strip()
-                m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', texto)
-                if m:
-                    dia  = int(m.group(1))
-                    mes  = int(m.group(2))
-                    anio = int(m.group(3))
-                    return dt.date(anio, mes, dia)
+            elem = self.driver.find_element(
+                By.CSS_SELECTOR, SEL_FECHA_VISOR)
+            texto = elem.text.strip()
+            m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', texto)
+            if m:
+                dia  = int(m.group(1))
+                mes  = int(m.group(2))
+                anio = int(m.group(3))
+                self.log(f"📅 Fecha visor: {dia}/{mes}/{anio}")
+                return dt.date(anio, mes, dia)
         except Exception:
             pass
-        return dt.date.today()
+        return None
 
     # ------------------------------------------------------------------ #
     # Descarga de adjunto
     # ------------------------------------------------------------------ #
-    def descargar_adjunto(self, msg: dict) -> str | None:
+    def descargar_adjunto(self, msg: dict, fecha_inicio: dt.date) -> str | None:
         data_id = msg["data_id"]
-        self.log(f"⬇ Descargando adjunto {data_id[:10]}...")
+        self.log(f"⬇ Abriendo adjunto {data_id[:10]}...")
 
         for intento in range(1, MAX_REINTENTOS + 1):
-            resultado = self._intentar_descarga(msg, data_id, intento)
+            resultado = self._intentar_descarga(msg, data_id, intento, fecha_inicio)
+            if resultado == IGNORADO:
+                return None
             if resultado:
                 return resultado
             self._scroll_al_final()
@@ -219,9 +225,11 @@ class LectorWhatsApp:
         self.log(f"❌ Falló descarga tras {MAX_REINTENTOS} intentos")
         return None
 
-    def _intentar_descarga(self, msg: dict, data_id: str, intento: int):
+    def _intentar_descarga(self, msg: dict, data_id: str,
+                           intento: int, fecha_inicio: dt.date):
         archivos_previos = self._snapshot_descargas()
 
+        # Re-localizar mensaje
         try:
             msg_elem = self.driver.find_element(
                 By.CSS_SELECTOR, f'[data-id="{data_id}"]')
@@ -229,6 +237,7 @@ class LectorWhatsApp:
             self.log(f"⚠ [{intento}] Mensaje no encontrado en DOM")
             return None
 
+        # Clic en thumb
         try:
             thumb_sel = SEL_DOC_THUMB if msg.get("es_pdf") else SEL_IMG_THUMB
             thumb = msg_elem.find_element(By.CSS_SELECTOR, thumb_sel)
@@ -245,6 +254,14 @@ class LectorWhatsApp:
 
         time.sleep(2)
 
+        # Leer fecha del visor ANTES de descargar
+        fecha_visor = self._leer_fecha_visor()
+        if fecha_visor is not None and fecha_visor < fecha_inicio:
+            self.log(f"⏭ Adjunto del {fecha_visor} anterior a fecha inicio — ignorado")
+            self._cerrar_visor()
+            return IGNORADO
+
+        # Botón descargar
         try:
             btn_dl = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable(

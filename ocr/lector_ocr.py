@@ -1,9 +1,8 @@
 """
 ocr/lector_ocr.py
 Motor OCR multi-banco para WSP Comprobantes.
-Detecta banco DESTINO por CBU/CVU de 22 dígitos.
-Extrae: banco, cod_cta, titular_receptor, titular,
-        monto, nro_operacion, fecha_comprobante.
+Detecta banco DESTINO por CBU/CVU de 22 digitos.
+Preprocesamiento de imagenes para mejorar OCR.
 """
 
 import os
@@ -12,7 +11,7 @@ import json
 import datetime as dt
 
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance
 import pdfplumber
 from pdf2image import convert_from_path
 
@@ -28,7 +27,7 @@ MESES_ES = {
 
 CORTE_NOMBRE = [
     "CBU", "CVU", "CUIT", "CUIL", "BANCO", "MOTIVO",
-    "DOMICILIO", "EMAIL", "TELÉFONO", "TELEFONO", "ALIAS",
+    "DOMICILIO", "EMAIL", "TELEFONO", "ALIAS",
     "CUENTA", "TIPO DE"
 ]
 
@@ -40,9 +39,12 @@ PATRONES_NRO_OP = [
     (r"Identificador\s+de\s+operaci[oó]n\s+(\w+)",                    "CIUDAD"),
     (r"N[°º]\s+de\s+la\s+operaci[oó]n\s+(\d+)",                      "PP"),
     (r"ID\s+de\s+la\s+transacci[oó]n\s+(\w+)",                        "LEM"),
+    (r"ID\s+de\s+la\s+transacci[oó]n\s*\n(\w+)",                      "LEM"),
     (r"N[°º]\s*[Oo]peraci[oó]n\s*[:\-]?\s*(\d+)",                    ""),
     (r"Referencia\s*[:\-]?\s*(\d+)",                                   ""),
     (r"N[uú]mero\s+de\s+operaci[oó]n\s*[:\-]?\s*(\d+)",              ""),
+    (r"COELSA\s+ID\s*\n(\w+)",                                         ""),
+    (r"N[°º]\s*de\s+operaci[oó]n\s*\n(\d+)",                         "GAL"),
 ]
 
 
@@ -68,19 +70,19 @@ class LectorOCR:
         elif ext == ".heic":
             texto = self._texto_heic(ruta)
         else:
-            self.log(f"⚠ Formato no soportado: {ext}")
+            self.log(f"Formato no soportado: {ext}")
             return self._plantilla_vacia()
 
         texto = texto.replace("\r\n", "\n").replace("\r", "\n")
 
         if not texto.strip():
-            self.log("⚠ OCR no extrajo texto")
+            self.log("OCR no extrajo texto")
             return self._plantilla_vacia()
 
         return self._extraer_campos(texto)
 
     # ------------------------------------------------------------------ #
-    # Extracción de texto
+    # Extraccion de texto
     # ------------------------------------------------------------------ #
     def _texto_pdf(self, ruta: str) -> str:
         try:
@@ -89,36 +91,49 @@ class LectorOCR:
             if texto.strip():
                 return texto
         except Exception as e:
-            self.log(f"⚠ pdfplumber falló: {e}")
+            self.log(f"pdfplumber fallo: {e}")
 
         try:
             paginas = convert_from_path(ruta, dpi=200)
             return "\n".join(
-                pytesseract.image_to_string(img, lang="spa")
+                pytesseract.image_to_string(
+                    self._preprocesar(img), lang="spa")
                 for img in paginas
             )
         except Exception as e:
-            self.log(f"❌ OCR PDF falló: {e}")
+            self.log(f"OCR PDF fallo: {e}")
             return ""
 
     def _texto_imagen(self, ruta: str) -> str:
         try:
-            return pytesseract.image_to_string(Image.open(ruta), lang="spa")
+            img = Image.open(ruta)
+            img = self._preprocesar(img)
+            return pytesseract.image_to_string(img, lang="spa")
         except Exception as e:
-            self.log(f"❌ OCR imagen falló: {e}")
+            self.log(f"OCR imagen fallo: {e}")
             return ""
 
     def _texto_heic(self, ruta: str) -> str:
         try:
             from pillow_heif import register_heif_opener
             register_heif_opener()
-            return pytesseract.image_to_string(Image.open(ruta), lang="spa")
+            img = Image.open(ruta)
+            img = self._preprocesar(img)
+            return pytesseract.image_to_string(img, lang="spa")
         except Exception as e:
-            self.log(f"❌ OCR HEIC falló: {e}")
+            self.log(f"OCR HEIC fallo: {e}")
             return ""
 
+    def _preprocesar(self, img: Image.Image) -> Image.Image:
+        """Preprocesamiento para mejorar OCR en fotos de pantalla."""
+        img = img.convert('L')
+        img = img.resize((img.width * 2, img.height * 2), Image.LANCZOS)
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(2.0)
+        return img
+
     # ------------------------------------------------------------------ #
-    # Extracción de campos
+    # Extraccion de campos
     # ------------------------------------------------------------------ #
     def _extraer_campos(self, texto: str) -> dict:
         cbu_cvu = self._buscar_cbu_cvu(texto)
@@ -170,7 +185,9 @@ class LectorOCR:
             r"Recibe[:\n]\s*(.+)",
             r"Beneficiario[:\n]\s*(.+)",
             r"Destinatario[:\n]\s*(.+)",
-            r"Envío\s+de\s+dinero\s+a[:\n]\s*(.+)",
+            r"Env[ií]o\s+de\s+dinero\s+a[:\n]\s*(.+)",
+            r"Persona\s+destinataria\s*\n.*?Nombre\s+(.+)",
+            r"Nombre\s+(.+)",
         ]
         return self._primer_patron(texto, patrones)
 
@@ -181,6 +198,7 @@ class LectorOCR:
             r"Enviado\s+por[:\n]\s*(.+)",
             r"Titular[:\n]\s*(.+)",
             r"Ordenante[:\n]\s*(.+)",
+            r"Enviado\s+por\s+(.+)",
         ]
         return self._primer_patron(texto, patrones)
 
@@ -206,14 +224,32 @@ class LectorOCR:
 
     def _extraer_monto(self, texto: str) -> str:
         patrones = [
+            r"ARS\s*([\d\.]+,\d{2})",
             r"\$\s*([\d\.]+,\d{2})",
+            r"\$\s*([\d\.]+)",
             r"\b([\d]{1,3}(?:\.\d{3})+,\d{2})\b",
             r"\b(\d+,\d{2})\b",
         ]
         for pat in patrones:
             m = re.search(pat, texto)
             if m:
-                return m.group(1)
+                valor = m.group(1).replace(".", "").replace(",", ",")
+                # Normalizar a formato argentino
+                if "," not in valor:
+                    valor = valor + ",00"
+                # Formatear con puntos de miles
+                partes = valor.split(",")
+                entero = partes[0]
+                decimal = partes[1] if len(partes) > 1 else "00"
+                # Agregar puntos de miles
+                if len(entero) > 3:
+                    entero_fmt = ""
+                    for i, c in enumerate(reversed(entero)):
+                        if i > 0 and i % 3 == 0:
+                            entero_fmt = "." + entero_fmt
+                        entero_fmt = c + entero_fmt
+                    return f"{entero_fmt},{decimal}"
+                return f"{entero},{decimal}"
         return "XX"
 
     def _extraer_nro_operacion(self, texto: str, prefijo_op: str) -> str:
@@ -236,6 +272,10 @@ class LectorOCR:
 
         for m in re.finditer(r"\b(\d{4})/(\d{2})/(\d{2})\b", texto):
             resultados.append(f"{m.group(3)}/{m.group(2)}/{m.group(1)}")
+
+        # 19/05/2026 . 08:55 h (Galicia)
+        for m in re.finditer(r"\b(\d{2}/\d{2}/\d{4})\s*[·•]\s*\d{2}:\d{2}", texto):
+            resultados.append(m.group(1))
 
         patron_texto = (
             r"\b(\d{1,2})\s+(?:de\s+)?("

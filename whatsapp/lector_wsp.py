@@ -5,6 +5,7 @@ Anti-StaleElement: siempre re-localiza por data-id antes de interactuar.
 Descarga: snapshot previo para detectar archivos nuevos.
 Filtro: lee fecha del visor antes de descargar.
 Carrusel: navega desde el último hacia la izquierda.
+Navegación: usa calendario de WhatsApp para saltar a la fecha de inicio.
 """
 
 import os
@@ -39,10 +40,20 @@ SEL_BTN_SIGUIENTE = '[aria-label="Siguiente"]'
 SEL_BTN_ANTERIOR  = '[aria-label="Anterior"]'
 SEL_FECHA_VISOR   = '[data-testid="cell-frame-secondary"]'
 SEL_TEXTO_MSG     = "span.selectable-text"
+SEL_BTN_BUSCAR    = '[aria-label="Buscar"]'
+SEL_BTN_CALENDARIO = '[aria-label="Ir a la fecha"]'
+SEL_BTN_MES_ANT   = '[aria-label="Mes anterior"]'
+SEL_BTN_MES_SIG   = '[aria-label="Mes siguiente"]'
 
 EXT_VALIDAS    = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic")
 MAX_REINTENTOS = 3
 IGNORADO       = "IGNORADO"
+
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+    "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+    "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+}
 
 
 class LectorWhatsApp:
@@ -65,7 +76,7 @@ class LectorWhatsApp:
     # ------------------------------------------------------------------ #
     # Sesión
     # ------------------------------------------------------------------ #
-    def iniciar_sesion(self):
+    def iniciar_sesion(self, fecha_inicio: dt.date | None = None):
         perfil_path = os.path.abspath(
             os.path.expanduser("~/wsp_comprobantes_perfil")
         )
@@ -97,6 +108,12 @@ class LectorWhatsApp:
         self.log("✅ WhatsApp Web listo")
         self._abrir_grupo()
 
+        if fecha_inicio:
+            self._ir_a_fecha(fecha_inicio)
+
+    # ------------------------------------------------------------------ #
+    # Abrir grupo
+    # ------------------------------------------------------------------ #
     def _abrir_grupo(self):
         search_box = self._wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, SEL_SEARCH_BOX))
@@ -120,6 +137,78 @@ class LectorWhatsApp:
         time.sleep(2)
         self._scroll_al_final()
         self.log(f"📂 Grupo abierto: {self.nombre_grupo}")
+
+    # ------------------------------------------------------------------ #
+    # Navegación por fecha del calendario
+    # ------------------------------------------------------------------ #
+    def _ir_a_fecha(self, fecha: dt.date):
+        try:
+            btn_buscar = self.driver.find_element(
+                By.CSS_SELECTOR, SEL_BTN_BUSCAR)
+            btn_buscar.click()
+            time.sleep(1)
+
+            btn_cal = self.driver.find_element(
+                By.CSS_SELECTOR, SEL_BTN_CALENDARIO)
+            btn_cal.click()
+            time.sleep(1)
+
+            self._navegar_mes_calendario(fecha)
+            self._click_dia_calendario(fecha.day)
+            time.sleep(2)
+            self.log(f"📅 Saltando a fecha: {fecha}")
+        except Exception as e:
+            self.log(f"⚠ No se pudo navegar al calendario: {e}")
+
+    def _navegar_mes_calendario(self, fecha: dt.date):
+        for _ in range(24):
+            try:
+                header = self.driver.find_element(
+                    By.XPATH,
+                    '//span[contains(text(),"202") and (contains(text(),"enero") or '
+                    'contains(text(),"febrero") or contains(text(),"marzo") or '
+                    'contains(text(),"abril") or contains(text(),"mayo") or '
+                    'contains(text(),"junio") or contains(text(),"julio") or '
+                    'contains(text(),"agosto") or contains(text(),"septiembre") or '
+                    'contains(text(),"octubre") or contains(text(),"noviembre") or '
+                    'contains(text(),"diciembre"))]'
+                )
+                texto = header.text.strip()
+                fecha_cal = self._parsear_mes_calendario(texto)
+                if fecha_cal is None:
+                    break
+                if fecha_cal.year == fecha.year and fecha_cal.month == fecha.month:
+                    break
+                if (fecha_cal.year, fecha_cal.month) > (fecha.year, fecha.month):
+                    self.driver.find_element(By.CSS_SELECTOR, SEL_BTN_MES_ANT).click()
+                else:
+                    self.driver.find_element(By.CSS_SELECTOR, SEL_BTN_MES_SIG).click()
+                time.sleep(0.5)
+            except Exception:
+                break
+
+    def _parsear_mes_calendario(self, texto: str) -> dt.date | None:
+        for mes_str, mes_num in MESES_ES.items():
+            if mes_str in texto.lower():
+                m = re.search(r'(\d{4})', texto)
+                if m:
+                    return dt.date(int(m.group(1)), mes_num, 1)
+        return None
+
+    def _click_dia_calendario(self, dia: int):
+        divs = self.driver.find_elements(
+            By.XPATH, '//div[@aria-hidden="true"]')
+        for div in divs:
+            try:
+                spans = div.find_elements(By.TAG_NAME, 'span')
+                for span in spans:
+                    if span.text.strip() == str(dia):
+                        self.driver.execute_script(
+                            "arguments[0].click();",
+                            div.find_element(By.XPATH, '..'))
+                        return
+            except Exception:
+                continue
 
     def _scroll_al_final(self):
         try:
@@ -162,7 +251,6 @@ class LectorWhatsApp:
                     self._mensajes_procesados.add(data_id)
                     continue
 
-                # Texto
                 try:
                     spans = msg.find_elements(By.CSS_SELECTOR, SEL_TEXTO_MSG)
                     texto = " ".join(s.text for s in spans if s.text).strip()
@@ -210,35 +298,14 @@ class LectorWhatsApp:
         return None
 
     # ------------------------------------------------------------------ #
-    # Contador del carrusel  ej: "3 de 7"
-    # ------------------------------------------------------------------ #
-    def _leer_contador_carrusel(self) -> tuple[int, int] | None:
-        try:
-            elems = self.driver.find_elements(By.XPATH, '//*[text()]')
-            for el in elems:
-                txt = el.text.strip()
-                m = re.match(r'^(\d+) de (\d+)$', txt)
-                if m:
-                    return int(m.group(1)), int(m.group(2))
-        except Exception:
-            pass
-        return None
-
-    # ------------------------------------------------------------------ #
     # Descarga de adjunto principal
     # ------------------------------------------------------------------ #
     def descargar_adjunto(self, msg: dict, fecha_inicio: dt.date) -> list[str]:
-        """
-        Retorna lista de archivos descargados (puede ser vacía).
-        Para imágenes recorre el carrusel desde el último hacia la izquierda.
-        Para PDFs descarga directo.
-        """
         data_id = msg["data_id"]
         es_pdf  = msg.get("es_pdf", False)
         self.log(f"⬇ Abriendo adjunto {data_id[:10]}...")
 
         for intento in range(1, MAX_REINTENTOS + 1):
-            # Re-localizar y hacer clic en thumb
             resultado = self._abrir_visor(msg, data_id, intento)
             if resultado == "STALE":
                 self._scroll_al_final()
@@ -256,7 +323,7 @@ class LectorWhatsApp:
         if es_pdf:
             return self._descargar_pdf(fecha_inicio)
         else:
-            return self._descargar_carrusel(fecha_inicio)
+            return self._descargar_imagen(fecha_inicio)
 
     def _abrir_visor(self, msg: dict, data_id: str, intento: int) -> str:
         try:
@@ -296,67 +363,22 @@ class LectorWhatsApp:
         return [archivo] if archivo else []
 
     # ------------------------------------------------------------------ #
-    # Descarga carrusel de imágenes
+    # Descarga imagen individual
     # ------------------------------------------------------------------ #
-    def _descargar_carrusel(self, fecha_inicio: dt.date) -> list[str]:
-        """
-        Navega al último del carrusel, luego va hacia la izquierda
-        descargando mientras fecha >= fecha_inicio.
-        """
-        archivos = []
+    def _descargar_imagen(self, fecha_inicio: dt.date) -> list[str]:
+        fecha_visor = self._leer_fecha_visor()
+        if fecha_visor is not None and fecha_visor < fecha_inicio:
+            self.log(f"⏭ Imagen del {fecha_visor} anterior a fecha inicio — ignorada")
+            self._cerrar_visor()
+            return []
 
-        # Ir al último
-        self._ir_al_ultimo_carrusel()
-        time.sleep(1)
-
-        while True:
-            fecha_visor = self._leer_fecha_visor()
-
-            if fecha_visor is not None and fecha_visor < fecha_inicio:
-                self.log(f"⏭ Imagen del {fecha_visor} anterior a fecha inicio — deteniendo carrusel")
-                break
-
-            # Descargar imagen actual
-            archivo = self._click_descargar()
-            if archivo:
-                self.log(f"🖼 Imagen descargada: {os.path.basename(archivo)}")
-                archivos.append(archivo)
-
-            # Mover a la izquierda
-            if not self._click_anterior():
-                self.log("ℹ Llegué al inicio del carrusel")
-                break
-
-            time.sleep(1)
-
+        archivo = self._click_descargar()
         self._cerrar_visor()
-        return archivos
+        return [archivo] if archivo else []
 
-    def _ir_al_ultimo_carrusel(self):
-        """Hace clic en Siguiente hasta llegar al último."""
-        max_intentos = 50
-        for _ in range(max_intentos):
-            try:
-                btn = self.driver.find_element(
-                    By.CSS_SELECTOR, SEL_BTN_SIGUIENTE)
-                btn.click()
-                time.sleep(0.5)
-            except NoSuchElementException:
-                break
-            except Exception:
-                break
-
-    def _click_anterior(self) -> bool:
-        try:
-            btn = self.driver.find_element(
-                By.CSS_SELECTOR, SEL_BTN_ANTERIOR)
-            btn.click()
-            return True
-        except NoSuchElementException:
-            return False
-        except Exception:
-            return False
-
+    # ------------------------------------------------------------------ #
+    # Click descargar
+    # ------------------------------------------------------------------ #
     def _click_descargar(self) -> str | None:
         archivos_previos = self._snapshot_descargas()
         try:
@@ -424,3 +446,4 @@ class LectorWhatsApp:
                 self.driver = None
         except Exception:
             pass
+        

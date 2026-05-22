@@ -97,7 +97,7 @@ class Controlador:
     # ------------------------------------------------------------------ #
     def _loop_principal(self, fecha_inicio: dt.datetime):
         try:
-            self.wsp.iniciar_sesion()
+            self.wsp.iniciar_sesion(fecha_inicio=fecha_inicio.date())
 
             while self._correr:
                 mensajes = self.wsp.leer_mensajes_recientes()

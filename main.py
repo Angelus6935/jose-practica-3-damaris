@@ -58,10 +58,10 @@ class Controlador:
         self.excel.cargar_operaciones_existentes()
 
         self.lotes.configurar(
-            modo_lotes  = modo_lotes,
-            cliente_fijo= cliente_fijo,
-            timeout_min = timeout_lotes_min,
-            fecha_inicio= fecha_inicio,
+            modo_lotes   = modo_lotes,
+            cliente_fijo = cliente_fijo,
+            timeout_min  = timeout_lotes_min,
+            fecha_inicio = fecha_inicio,
         )
 
         def flush_lote(registros):
@@ -126,29 +126,18 @@ class Controlador:
     # Procesar adjunto
     # ------------------------------------------------------------------ #
     def _procesar_adjunto(self, msg: dict, fecha_inicio: dt.datetime):
+        # Filtro por fecha del mensaje desde el DOM (sin descargar)
+        fecha_msg = msg.get("fecha_msg")
+        if fecha_msg and fecha_msg < fecha_inicio.date():
+            self.log(f"⏭ Mensaje del {fecha_msg} anterior a fecha inicio — ignorado")
+            return
+
         archivo = self.wsp.descargar_adjunto(msg)
         if not archivo:
             return
 
-        datos = self.ocr.procesar_archivo(archivo)
-        fecha_str = datos.get("fecha_comprobante", "XX")
-
-        # Filtro de fecha
-        if fecha_str != "XX":
-            try:
-                fecha_dt = self.ocr.parsear_fecha(fecha_str)
-                if fecha_dt < fecha_inicio:
-                    self.log(
-                        f"⏭ Comprobante {fecha_str} anterior a fecha inicio — ignorado"
-                    )
-                    return
-                estado = "OK"
-            except ValueError:
-                self.log(f"⚠ Fecha no parseable: '{fecha_str}' → Revisión")
-                estado = "Revisión"
-        else:
-            self.log("⚠ Fecha no detectada → Revisión")
-            estado = "Revisión"
+        datos  = self.ocr.procesar_archivo(archivo)
+        estado = "OK"
 
         # Deduplicación
         nro_op = datos.get("nro_operacion", "XX")
@@ -159,7 +148,6 @@ class Controlador:
         # Construir registro
         registro = self.lotes.construir_registro(datos_ocr=datos, estado=estado)
 
-        # Modo lotes: acumular, no registrar aún
         if self.lotes.modo_lotes:
             self.log(
                 f"📥 Acumulado en lote: {nro_op} | {datos['banco']} | ${datos['monto']}"

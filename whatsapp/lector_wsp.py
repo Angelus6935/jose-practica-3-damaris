@@ -6,7 +6,9 @@ Descarga: snapshot previo para detectar archivos nuevos.
 """
 
 import os
+import re
 import time
+import datetime as dt
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -33,8 +35,8 @@ SEL_BTN_DESCARGAR = '[aria-label="Descargar"]'
 SEL_BTN_CERRAR    = '[aria-label="Cerrar"]'
 SEL_TEXTO_MSG     = "span.selectable-text"
 
-EXT_VALIDAS        = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic")
-MAX_REINTENTOS     = 3
+EXT_VALIDAS    = (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic")
+MAX_REINTENTOS = 3
 
 
 class LectorWhatsApp:
@@ -146,15 +148,17 @@ class LectorWhatsApp:
                 tiene_img = self._tiene_selector(msg, SEL_IMG_THUMB)
 
                 if tiene_pdf or tiene_img:
+                    fecha_msg = self._leer_fecha_mensaje(msg)
                     resultado.append({
-                        "tipo":    "adjunto",
-                        "data_id": data_id,
-                        "es_pdf":  tiene_pdf,
+                        "tipo":      "adjunto",
+                        "data_id":   data_id,
+                        "es_pdf":    tiene_pdf,
+                        "fecha_msg": fecha_msg,
                     })
                     self._mensajes_procesados.add(data_id)
                     continue
 
-                # Mensaje de texto
+                # Texto
                 try:
                     spans = msg.find_elements(By.CSS_SELECTOR, SEL_TEXTO_MSG)
                     texto = " ".join(s.text for s in spans if s.text).strip()
@@ -182,6 +186,22 @@ class LectorWhatsApp:
         except (NoSuchElementException, StaleElementReferenceException):
             return False
 
+    def _leer_fecha_mensaje(self, msg_elem) -> dt.date:
+        try:
+            divs = msg_elem.find_elements(
+                By.XPATH, './/div[contains(text(), "/202")]')
+            for div in divs:
+                texto = div.text.strip()
+                m = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', texto)
+                if m:
+                    dia  = int(m.group(1))
+                    mes  = int(m.group(2))
+                    anio = int(m.group(3))
+                    return dt.date(anio, mes, dia)
+        except Exception:
+            pass
+        return dt.date.today()
+
     # ------------------------------------------------------------------ #
     # Descarga de adjunto
     # ------------------------------------------------------------------ #
@@ -202,7 +222,6 @@ class LectorWhatsApp:
     def _intentar_descarga(self, msg: dict, data_id: str, intento: int):
         archivos_previos = self._snapshot_descargas()
 
-        # Re-localizar mensaje
         try:
             msg_elem = self.driver.find_element(
                 By.CSS_SELECTOR, f'[data-id="{data_id}"]')
@@ -210,7 +229,6 @@ class LectorWhatsApp:
             self.log(f"⚠ [{intento}] Mensaje no encontrado en DOM")
             return None
 
-        # Clic en thumb
         try:
             thumb_sel = SEL_DOC_THUMB if msg.get("es_pdf") else SEL_IMG_THUMB
             thumb = msg_elem.find_element(By.CSS_SELECTOR, thumb_sel)
@@ -227,7 +245,6 @@ class LectorWhatsApp:
 
         time.sleep(2)
 
-        # Botón descargar
         try:
             btn_dl = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable(

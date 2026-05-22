@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+comprobantes_descargados/
+comprobantes.xlsx
